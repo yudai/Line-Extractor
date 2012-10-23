@@ -64,3 +64,7 @@ h1 {
    border-bottom: 1px #a0a0a0 solid;
    border-left: 1px #a0a0a0 solid;
 }
+
+#original {
+   display: none;
+}
