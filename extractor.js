@@ -30,72 +30,94 @@ $(function() {
         return ((r * 0.299) + (g * 0.587) + (b * 0.114)) * a / PIXCEL_MAX;
     };
 
-
-
-    var sacaleMean1d = function(fromData, toData, outerSize, innerSize, ratioI, ratioF, outerStep, innerStep, posOuterStep, posInnerStep) {
-        var ratioI1 = ratioI - 1;
-        var shift = 0;
-        var pos = 0;
-        var posShift = 0;
-        var scale = ratioI + ratioF;
-        for (var o = 0; o < outerSize; o++) {
-            var mappedI = shift;
-            var mappedF = 0.0;
-            var pos = posShift;
-            for (var i = 0; i < innerSize; i++) {
-                var vR = 0, vG = 0, vB = 0, vA = 0;
-                var r = 1 - mappedF;
-                vR += fromData[mappedI + PIXCEL_R] * r;
-                vG += fromData[mappedI + PIXCEL_G] * r;
-                vB += fromData[mappedI + PIXCEL_B] * r;
-                vA += fromData[mappedI + PIXCEL_A] * r;
-                for (var c = 0; c < ratioI1; c++) {
-                    mappedI += innerStep;
-                    vR += fromData[mappedI + PIXCEL_R];
-                    vG += fromData[mappedI + PIXCEL_G];
-                    vB += fromData[mappedI + PIXCEL_B];
-                    vA += fromData[mappedI + PIXCEL_A];
-                }
-                mappedF += ratioF;
-                if (mappedF >= 1) {
-                    mappedF -= 1;
-                    mappedI += innerStep;
-                    vR += fromData[mappedI + PIXCEL_R];
-                    vG += fromData[mappedI + PIXCEL_G];
-                    vB += fromData[mappedI + PIXCEL_B];
-                    vA += fromData[mappedI + PIXCEL_A];
-                }
-                mappedI += innerStep;
-                vR += fromData[mappedI + PIXCEL_R] * mappedF;
-                vG += fromData[mappedI + PIXCEL_G] * mappedF;
-                vB += fromData[mappedI + PIXCEL_B] * mappedF;
-                vA += fromData[mappedI + PIXCEL_A] * mappedF;
-                pos += posInnerStep;
-                toData[pos + PIXCEL_R] = Math.round(vR / scale);
-                toData[pos + PIXCEL_G] = Math.round(vG / scale);
-                toData[pos + PIXCEL_B] = Math.round(vB / scale);
-                toData[pos + PIXCEL_A] = Math.round(vA / scale);
-            }
-            shift += outerStep;
-            posShift += posOuterStep;
-        }
+    var state = {};
+    var saveResult = function(img) {
+        state["result"] = img;
     };
 
-    var resize = function(from, to) {
+    // L(t) = sinc(d) * sinc(d/a) (|d| <= n)
+    //      = 0                   (|d|  > n)
+    var scaleLanzcos = function(from, to, n) {
         var fromWidth = from.width;
         var fromHeight = from.height;
         var toWidth = to.width;
         var toHeight = to.height;
-        var widthRatioI = Math.floor(fromWidth /toWidth);
-        var widthRatioF = (fromWidth / toWidth) - widthRatioI;
-        var heightRatioI = Math.floor(fromHeight / toHeight);
-        var heightRatioF = (fromHeight / toHeight) - heightRatioI;
+        var ratioX = fromWidth /toWidth;
+        var ratioY = fromHeight / toHeight;
         var fromData = from.data;
         var toData = to.data;
-        sacaleMean1d(fromData, fromData, fromHeight, toWidth, widthRatioI, widthRatioF, fromWidth * PIXCEL_CHANNELS, PIXCEL_CHANNELS, fromWidth * PIXCEL_CHANNELS, PIXCEL_CHANNELS);
-        sacaleMean1d(fromData, toData, toWidth, toHeight, heightRatioI, heightRatioF, PIXCEL_CHANNELS, fromWidth * PIXCEL_CHANNELS, PIXCEL_CHANNELS, toWidth * PIXCEL_CHANNELS);
+
+        var lowpassX = ratioX > 1 ? ratioX : 1;
+        var lowpassY = ratioY > 1 ? ratioY : 1;
+        var sampleNumX = ~~(n * 2 * lowpassX);
+        var sampleNumY = ~~(n * 2 * lowpassY);
+        var stepKernelX = Math.PI / lowpassX;
+        var stepKernelY = Math.PI / lowpassY;
+        var leftMostLX = ~~(sampleNumX / 2) - 1;
+        var leftMostLY = ~~(sampleNumY / 2) - 1;
+        var phaiXs = new Array(toWidth);
+
+        var pos = 0;
+        for (var y = 0; y <toHeight; y++) {
+            var mappedY = y * ratioY + 0.5; // should be - 0.5, but shifting + 1 to avoid negative number
+            var nY = ~~mappedY;
+            var dY = mappedY - nY;
+            var leftMostY = (lowpassY > 1 || dY > 0.5) ? leftMostLY : leftMostLY + 1;
+            var phaiY = new Array(sampleNumY);
+            var dp =  Math.PI / lowpassY * (- dY - leftMostY);
+            for (var i = 0; i < sampleNumY; i++, dp += stepKernelY) {
+                var dpn = dp / n;
+                phaiY[i] = Math.sin(dp) * Math.sin(dpn) / dp / dpn;
+                if (isNaN(phaiY[i])) phaiY[i] = 1;
+            }
+            var indexYStart = nY - leftMostY - 1; //  - 1 restores mappedY shifting
+            for (var x = 0; x < toWidth; x++, pos += PIXCEL_CHANNELS) {
+                var mappedX =  x * ratioX + 0.5; // same as Y
+                var nX = ~~mappedX;
+                var dX = mappedX - nX;
+                var leftMostX = (lowpassX > 1 || dX > 0.5) ? leftMostLX : leftMostLX + 1;
+                if (y == 0) {
+                    var phaiX = new Array(sampleNumX);
+                    var dp =  Math.PI / lowpassX * (- dX - leftMostX);
+                    for (var i = 0; i < sampleNumX; i++, dp += stepKernelX) {
+                        var dpn = dp / n;
+                        phaiX[i] = Math.sin(dp) * Math.sin(dpn) / dp / dpn;
+                        if (isNaN(phaiX[i])) phaiX[i] = 1;
+                    }
+                    phaiXs[x] = phaiX;
+                } else {
+                    var phaiX = phaiXs[x];
+                }
+                var r = 0; var g = 0; var b = 0;
+                var wSum = 0;
+                var indexXStart = nX - leftMostX - 1;// - 1 restores mappedX shifting
+                var indexY = indexYStart;
+                for (var cY = 0; cY < sampleNumY; cY++, indexY++) {
+                    if (indexY < 0 || indexY >= fromHeight) continue;
+                    var indexX = indexXStart;
+                    for (var cX = 0; cX < sampleNumX; cX++, indexX++) {
+                        if (indexX < 0 || indexX >= fromWidth) continue;
+                        var w = phaiX[cX] * phaiY[cY];
+                        var fromPos = (indexX + indexY * fromWidth) * PIXCEL_CHANNELS;
+                        wSum += w;
+                        r += fromData[fromPos + PIXCEL_R] * w;
+                        g += fromData[fromPos + PIXCEL_G] * w;
+                        b += fromData[fromPos + PIXCEL_B] * w;
+                    }
+                }
+                toData[pos + PIXCEL_R] = Math.round(r / wSum);
+                toData[pos + PIXCEL_G] = Math.round(g / wSum);
+                toData[pos + PIXCEL_B] = Math.round(b / wSum);
+            }
+        }
+        return toData;
     };
 
+    var scaleLanzcosAsync = function(from, to, n, callback) {
+        setTimeout(function() {
+            callback(scaleLanzcos(from, to, n));
+        }, 0);
+    };
 
     var createHistgram  = function(data, about) {
         var result = new Array(Math.pow(2, PIXCEL_BITS));
@@ -110,8 +132,6 @@ $(function() {
         }
         return result;
     };
-
-
 
     var drawHistgram = function(histgram, image, limit) {
         var histLen = histgram.length;
@@ -155,16 +175,23 @@ $(function() {
         inputCanvas.width = resultCanvas.width = img.width;
         inputCanvas.height = resultCanvas.height = img.height;
         inputCtx.drawImage(img, 0, 0, img.width, img.height);
+        var inputImg = inputCtx.getImageData(0, 0, inputCanvas.width, inputCanvas.height);
+        var inputData = inputImg.data;
 
         // draw on viwer
         var ratio = (img.height / img.width);
         inputViewerCanvas.height = resultViewerCanvas.height = inputViewerCanvas.width * (img.height / img.width);
         var inputViewerImg = inputViewerCtx.createImageData(inputViewerCanvas.width, inputViewerCanvas.height);
-        resize(inputCtx.getImageData(0, 0, inputCanvas.width, inputCanvas.height), inputViewerImg);
-        inputViewerCtx.putImageData(inputViewerImg, 0, 0);
+        scaleLanzcosAsync(inputImg, inputViewerImg, 2,
+                     function() {
+                         arrySize = inputViewerCanvas.width * inputViewerCanvas.height * PIXCEL_CHANNELS;
+                         for (var i = 0; i < arrySize; i += PIXCEL_CHANNELS) {
+                             inputViewerImg.data[i + PIXCEL_A] = PIXCEL_MAX;
+                         }
+                         inputViewerCtx.putImageData(inputViewerImg, 0, 0);
+                     });
 
         // draw histgram
-        var inputData = inputCtx.getImageData(0, 0, inputCanvas.width, inputCanvas.height).data;
         var inputHist = createHistgram(inputData, luminance);
         var inputHistImg = inputHistCtx.createImageData(inputHistCanvas.width, inputHistCanvas.height);
         drawHistgram(inputHist, inputHistImg, 10); // 10?
@@ -191,7 +218,7 @@ $(function() {
         cutRight -= 0;
         drawHistgramThreshold(inputHistCtx, cutRight, '#0f0');
 
-        // draw result
+        // prepare result
         var cutRange = 256 - cutLeft - (256 - cutRight);
         var resultImg = resultCtx.createImageData(resultCanvas.width, resultCanvas.height);
         var resultData = resultImg.data;
@@ -202,12 +229,18 @@ $(function() {
             resultData[i + PIXCEL_R] = resultData[i + PIXCEL_G] = resultData[i + PIXCEL_B] = l;
             resultData[i + PIXCEL_A] = PIXCEL_MAX;
         }
-        resultCtx.putImageData(resultImg, 0, 0);
+        saveResult(resultImg);
 
+        // draw result viewer
         var resultViewerImg = resultViewerCtx.createImageData(resultViewerCanvas.width, resultViewerCanvas.height);
-        resize(resultImg, resultViewerImg);
-        resultViewerCtx.putImageData(resultViewerImg, 0, 0);
-
+        scaleLanzcosAsync(resultImg, resultViewerImg, 2, function() {
+            var resultViewerData = resultViewerImg.data;
+            arrySize = resultViewerCanvas.width * resultViewerCanvas.height * PIXCEL_CHANNELS;
+            for (var i = 0; i < arrySize; i += PIXCEL_CHANNELS) {
+                resultViewerData[i + PIXCEL_A] = PIXCEL_MAX;
+            }
+            resultViewerCtx.putImageData(resultViewerImg, 0, 0);
+        });
     };
 
 
@@ -235,8 +268,7 @@ $(function() {
     });
 
     $("#download_result").click(function(e) {
-        resultCanvas.toDataURL();
+        resultCtx.putImageData(state["result"], 0, 0);
+        document.location = resultCanvas.toDataURL();
     });
-
-
 });

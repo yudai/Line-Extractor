@@ -28,9 +28,6 @@ h1 {
 #viewer > canvas {
    background: #fff;
    border: 1px solid black;
-   width: 40%;
-   height: 80%;
-   margin: 1em;
 }
 
 #console, #viewer {
